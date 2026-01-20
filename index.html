@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Pixel Art Canvas</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #222;
+        }
+
+        canvas {
+            /* 拡大してもボケないように設定 */
+            image-rendering: pixelated;
+            border: 2px solid #fff;
+            /* 実際の表示サイズ */
+            width: 640px;
+            height: 480px;
+        }
+
+        .fps-counter {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            font-family: monospace;
+        }
+
+        .generation-counter {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            color: white;
+            font-size: 18px;
+            font-family: monospace;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+            background-color: #444;
+            color: white;
+            border: 1px solid #fff;
+            border-radius: 5px;
+        }
+
+        button:hover {
+            background-color: #666;
+        }
+    </style>
+</head>
+
+<body>
+    <canvas id="pixelCanvas" width="40" height="30"></canvas>
+    <div id="fpsCounter" class="fps-counter">FPS: 0</div>
+    <div id="generationCounter" class="generation-counter">Generation: 0</div>
+    <div class="controls">
+        <button id="prevBtn">PREV</button>
+        <button id="nextBtn">NEXT</button>
+    </div>
+    <script>
+        // ---- ライフゲームロジック ----
+        // セル情報格納クラス
+        class CellInfo {
+            constructor(x, y, alive) {
+                this.x = x;
+                this.y = y;
+                this.alive = alive;
+            }
+        }
+        // 連想配列キー取得
+        // 座標表現で文字列化
+        const cellKey = (x, y) => `${x},${y}`;
+        // 生存数取得
+        // (CellInfo, Map<string, CellInfo>) => number
+        const countAliveNeighbors = (cell, cellMap) => {
+            let result = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) continue; // 自分を除外
+                    // 連想配列キー生成
+                    const key = cellKey(cell.x + dx, cell.y + dy);
+                    // 存在チェック
+                    if (cellMap.hasOwnProperty(key)) {
+                        result += cellMap[key].alive ? 1 : 0;
+                    }
+                }
+            }
+            return result;
+        };
+        // 状態更新
+        // (CellInfo, Map<string, CellInfo>) => boolean
+        const updateAliveFlag = (cell, cellMap) => {
+            // 生存：生きているセルに隣接する生きたセルが2つかまたは3つあれば、生存維持
+            // 過疎or過密：上記の条件を満たさない場合は、次の世代で死滅する
+            const forAliveTable = [false, false, true, true, false, false, false, false, false, false];
+            // 誕生：死んでいるセルに隣接する生きたセルがちょうど3つあれば、次の世代で誕生する
+            // 過疎or過密：上記の条件を満たさない場合は、次の世代で死滅する
+            const forBirthTable = [false, false, false, true, false, false, false, false, false, false];
+            const aliveCount = countAliveNeighbors(cell, cellMap);
+            return cell.alive ? forAliveTable[aliveCount] : forBirthTable[aliveCount];
+        };
+        // 次世代マップ取得
+        // (Map<string, CellInfo>) => Map<string, boolean>
+        const getNextGenerationMap = (cellMap) => {
+            const aliveMap = {};
+            for (const key in cellMap) {
+                const cell = cellMap[key];
+                const alive = updateAliveFlag(cell, cellMap);
+                aliveMap[key] = alive;
+            }
+            return aliveMap;
+        };
+        // 現世代マップ取得
+        // (Map<string, CellInfo>) => Map<string, boolean>
+        const getCurrentGenerationMap = (cellMap) => {
+            const aliveMap = {};
+            for (const key in cellMap) {
+                const cell = cellMap[key];
+                aliveMap[key] = cell.alive;
+            }
+            return aliveMap;
+        };
+        // ---- 初期配置 ----
+        // セルマップ生成
+        // (number, number, Map<string, boolean>) => Map<string, CellInfo>
+        const createCellMap = (width, height, layoutMap) => {
+            const result = {};
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const key = cellKey(x, y);
+                    const alive = layoutMap.hasOwnProperty(key) ? layoutMap[key] : false;
+                    result[key] = new CellInfo(x, y, alive);
+                }
+            }
+            return result;
+        }
+
+        // ---- 描画ロジック ----
+        // ピクセルを描画する関数
+        // (number, number, string) => void
+        const drawPixel = (x, y, color) => {
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, 1, 1);
+        };
+        // セルの色を取得する関数
+        // (boolean, number) => string
+        const getCellColor = (alive, seed) => {
+            if (seed % 2 == 0) {
+                return alive ? '#0f0' : '#444';
+            } else {
+                return alive ? '#8f0' : '#222';
+            }
+        };
+        // セル描画を更新
+        // (Map<string, CellInfo>, Map<string, boolean>) => void
+        const updateAllCellPixels = (cellMap, aliveMap) => {
+            for (const key in cellMap) {
+                const cell = cellMap[key];
+                if (aliveMap.hasOwnProperty(key)) {
+                    // キーが一致するセルの生死状態を更新
+                    cell.alive = aliveMap[key];
+                }
+                const color = getCellColor(cell.alive, cell.x + cell.y);
+                drawPixel(cell.x, cell.y, color);
+            }
+        };
+
+        const canvas = document.getElementById('pixelCanvas');
+        const ctx = canvas.getContext('2d');
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+        // 背景を塗りつぶす
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // 初期配置
+        const firstLayoutMap = {
+            '5,5': true,
+            '6,4': true,
+            '6,5': true,
+            '6,6': true,
+            '11,4': true,
+            '11,5': true,
+            '11,6': true,
+            '12,5': true,
+        };
+
+        // セルマップ
+        const allCellMap = createCellMap(canvasWidth, canvasHeight, firstLayoutMap);
+
+        // 世代表示要素
+        const generationCounterDiv = document.getElementById('generationCounter');
+        let generationCounter = 0;
+        const generationMapArray = [];
+
+        // ---- 初期描画 ----
+        ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+        // セルを描画
+        updateAllCellPixels(allCellMap, {});
+
+        // ---- イベントリスナー ----
+        // Canvasクリック時のイベント
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            // クリック座標をキャンバス内の論理座標に変換
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = Math.floor((e.clientX - rect.left) * scaleX);
+            const y = Math.floor((e.clientY - rect.top) * scaleY);
+
+            const key = cellKey(x, y);
+            if (allCellMap.hasOwnProperty(key)) {
+                // 生死を反転
+                allCellMap[key].alive = !allCellMap[key].alive;
+                // 再描画
+                const color = getCellColor(allCellMap[key].alive, x + y);
+                drawPixel(x, y, color);
+            }
+        });
+
+        // NEXTボタン押下時
+        document.getElementById('nextBtn').addEventListener('click', () => {
+            // 現世代マップを保存
+            const nowMap = getCurrentGenerationMap(allCellMap);
+            generationMapArray.push(nowMap);
+            // 世代を進める
+            generationCounter += 1;
+            generationCounterDiv.textContent = `Generation: ${generationCounter}`;
+            // 画面をクリア
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            // ライフゲームの生死状態を保持する連想配列
+            const aliveMap = getNextGenerationMap(allCellMap);
+            // セルを描画
+            updateAllCellPixels(allCellMap, aliveMap);
+        });
+        // PREVボタン押下時
+        document.getElementById('prevBtn').addEventListener('click', () => {
+            // 前世代マップを取得
+            const prevMap = generationMapArray.pop();
+            if (prevMap === undefined) {
+                return;
+            }
+            // 世代を戻す
+            generationCounter -= 1;
+            generationCounterDiv.textContent = `Generation: ${generationCounter}`;
+            // 画面をクリア
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+            // セルを描画
+            updateAllCellPixels(allCellMap, prevMap);
+        });
+
+        // ---- メインループ ----
+
+        // FPS表示要素
+        const fpsDiv = document.getElementById('fpsCounter');
+        let lastTime = 0;
+        let frameCount = 0;
+        let fps = 0;
+
+        // アニメーションループ
+        function animate(timestamp) {
+            // FPS計算
+            if (!lastTime) lastTime = timestamp;
+            const diff = timestamp - lastTime;
+            frameCount++;
+            if (diff >= 1000) {
+                const fpsFloat = (frameCount * 1000) / diff;
+                fps = Math.round(fpsFloat * 100) / 100;
+                fpsDiv.textContent = `FPS: ${fps}`;
+                // リセット
+                frameCount = 0;
+                lastTime = timestamp;
+            }
+            // 次のフレームを予約
+            requestAnimationFrame(animate);
+        }
+        requestAnimationFrame(animate);
+    </script>
+</body>
+
+</html>
